@@ -37,7 +37,6 @@ defmodule ChromeRemote.Chrome do
   def version(pid), do: get_http_uri(pid) |> HTTP.call("/json/version")
 
   def new_page(pid, opts \\ []) do
-    IO.puts(get_http_uri(pid))
     data = get_http_uri(pid) |> HTTP.call!("/json/new")
     credentials = get_credentials(pid)
 

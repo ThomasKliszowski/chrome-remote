@@ -12,7 +12,8 @@ defmodule ChromeRemote.Page do
             ref_id: 1,
             chrome_pid: nil,
             page_id: nil,
-            credentials: nil
+            credentials: nil,
+            lifecycle_pid: nil
 
   def start_link(args \\ [], opts \\ []), do: GenServer.start_link(__MODULE__, args, opts)
 
@@ -30,15 +31,27 @@ defmodule ChromeRemote.Page do
       |> WebSocket.start_link()
 
     setup_authentication(credentials)
+    {:ok, lifecycle_pid} = setup_lifecycle()
     setup_user_agent(user_agent)
 
     state = %Page{
       socket: socket,
       chrome_pid: chrome_pid,
+      lifecycle_pid: lifecycle_pid,
       page_id: page_id
     }
 
     {:ok, state}
+  end
+
+  def navigate(page, url) do
+    Interface.Page.navigate!(page, %{url: url})
+    send(get_lifecycle(page), :navigating)
+  end
+
+  def wait_for_loading(page) do
+    get_lifecycle(page)
+    |> Page.Lifecycle.wait_for_loading()
   end
 
   def subscribe(pid, event, subscriber_pid \\ self()) do
@@ -53,37 +66,18 @@ defmodule ChromeRemote.Page do
     GenServer.call(pid, {:unsubscribe_all, subscriber_pid})
   end
 
-  def execute_command(pid, method, params, opts) do
-    async = Keyword.get(opts, :async, false)
-    timeout = Keyword.get(opts, :timeout, 5_000)
+  defp get_lifecycle(page), do: GenServer.call(page, :get_lifecycle, 10_000)
 
-    case async do
-      false -> call(pid, method, params, timeout)
-      true -> cast(pid, method, params, self())
-      from when is_pid(from) -> cast(pid, method, params, from)
-    end
+  def execute_command(pid, method, params, opts) do
+    timeout = Keyword.get(opts, :timeout, 5_000)
+    call(pid, method, params, timeout)
   end
 
   def call(pid, method, params, timeout) do
     GenServer.call(pid, {:call_command, method, params}, timeout)
   end
 
-  def cast(pid, method, params, from \\ self()) do
-    GenServer.cast(pid, {:cast_command, method, params, from})
-  end
-
   # -----
-
-  def handle_cast({:cast_command, method, params, from}, state) do
-    send(self(), {:send_rpc_request, state.ref_id, state.socket, method, params})
-
-    new_state =
-      state
-      |> add_callback({:cast, method, from})
-      |> increment_ref_id()
-
-    {:noreply, new_state}
-  end
 
   def handle_call({:call_command, method, params}, from, state) do
     send(self(), {:send_rpc_request, state.ref_id, state.socket, method, params})
@@ -135,6 +129,10 @@ defmodule ChromeRemote.Page do
     new_state = %{state | event_subscribers: new_event_subscribers}
 
     {:reply, :ok, new_state}
+  end
+
+  def handle_call(:get_lifecycle, _from, %{lifecycle_pid: lifecycle_pid} = state) do
+    {:reply, lifecycle_pid, state}
   end
 
   # This handles websocket frames coming from the websocket connection.
@@ -228,6 +226,8 @@ defmodule ChromeRemote.Page do
     pids_subscribed_to_event
     |> Enum.each(&send(&1, event))
   end
+
+  defp setup_lifecycle(), do: Page.Lifecycle.start_link(page: self())
 
   defp setup_authentication(nil), do: nil
 
