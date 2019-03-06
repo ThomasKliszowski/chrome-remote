@@ -1,0 +1,2 @@
+defmodule ChromeRemote do
+end
