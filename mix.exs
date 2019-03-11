@@ -23,7 +23,7 @@ defmodule ChromeRemote.MixProject do
     [
       {:websockex, "~> 0.4.2"},
       {:jason, "~> 1.1"},
-      {:mint, "~> 0.1.0"}
+      {:httpoison, "~> 1.5"}
     ]
   end
 end

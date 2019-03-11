@@ -1,6 +1,12 @@
 defmodule ChromeRemote.Chrome do
   use GenServer
+  alias __MODULE__
   alias ChromeRemote.Protocol.HTTP
+
+  defstruct credentials: nil,
+            port: nil,
+            host: nil,
+            listeners: []
 
   def start_link(args \\ [], opts \\ []), do: GenServer.start_link(__MODULE__, args, opts)
 
@@ -15,16 +21,9 @@ defmodule ChromeRemote.Chrome do
 
     {credentials, opts} = Keyword.pop(opts, :credentials)
 
-    launch(opts)
-
-    state = %{
-      host: nil,
-      port: nil,
-      credentials: credentials,
-      listeners: %{
-        get_http_uri: []
-      }
-    }
+    state =
+      %Chrome{credentials: credentials}
+      |> launch(opts)
 
     {:ok, state}
   end
@@ -33,16 +32,25 @@ defmodule ChromeRemote.Chrome do
 
   def list_pages(pid), do: get_http_uri(pid) |> HTTP.call("/json/list")
   def activate_page(pid, page_id), do: get_http_uri(pid) |> HTTP.call("/json/activate/#{page_id}")
-  def close_page(pid, page_id), do: get_http_uri(pid) |> HTTP.call("/json/close/#{page_id}")
   def version(pid), do: get_http_uri(pid) |> HTTP.call("/json/version")
 
   def new_page(pid, opts \\ []) do
     data = get_http_uri(pid) |> HTTP.call!("/json/new")
     credentials = get_credentials(pid)
 
-    opts
-    |> Keyword.merge(chrome_pid: pid, page_id: data["id"], credentials: credentials)
-    |> ChromeRemote.Page.start_link(opts)
+    {:ok, page} =
+      opts
+      |> Keyword.merge(chrome_pid: pid, page_id: data["id"], credentials: credentials)
+      |> ChromeRemote.Page.start_link()
+
+    {:ok, page}
+  end
+
+  def close_page(pid, page) do
+    page_id = ChromeRemote.Page.get_page_id(page)
+    get_http_uri(pid) |> HTTP.call("/json/close/#{page_id}")
+    Process.exit(page, :shutdown)
+    :ok
   end
 
   def get_websocket_uri(pid, page_id) do
@@ -64,31 +72,6 @@ defmodule ChromeRemote.Chrome do
   # -----
 
   @impl true
-  def handle_info({proc, {:data, message}}, state) when is_list(message) do
-    message =
-      message
-      |> to_string()
-      |> String.trim()
-
-    handle_info({proc, {:data, message}}, state)
-  end
-
-  @impl true
-  def handle_info(
-        {_, {:data, "DevTools listening on " <> address}},
-        %{listeners: listeners} = state
-      ) do
-    uri = URI.parse(address)
-    port = uri |> Map.get(:port)
-    host = uri |> Map.get(:host)
-    state = %{state | port: port, host: host, listeners: %{}}
-
-    listeners.get_http_uri |> Enum.each(&GenServer.reply(&1, http_uri(state)))
-
-    {:noreply, state}
-  end
-
-  @impl true
   def handle_info({_, {:data, _message}}, state), do: {:noreply, state}
 
   @impl true
@@ -97,27 +80,37 @@ defmodule ChromeRemote.Chrome do
   end
 
   @impl true
-  def handle_call(:get_http_uri, from, %{port: port, listeners: listeners} = state) do
-    case port do
-      nil ->
-        listeners = %{listeners | get_http_uri: [from | listeners.get_http_uri]}
-        {:noreply, %{state | listeners: listeners}}
-
-      _port ->
-        {:reply, http_uri(state), state}
-    end
+  def handle_call(:get_http_uri, _, state) do
+    {:reply, http_uri(state), state}
   end
 
   defp http_uri(%{host: host, port: port}), do: URI.parse("http://#{host}:#{port}")
 
   # -----
 
-  defp launch(opts) do
+  defp launch(state, opts) do
     executable = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     wrapper = Path.join(:code.priv_dir(:chrome_remote), "wrapper.sh")
 
     command = "#{wrapper} '#{executable}' #{render_opts(opts)}"
     Port.open({:spawn, command}, [:stderr_to_stdout])
+
+    receive do
+      {_, {:data, _}} -> nil
+    end
+
+    uri =
+      receive do
+        {_, {:data, message}} ->
+          "DevTools listening on " <> address =
+            message
+            |> to_string()
+            |> String.trim()
+
+          URI.parse(address)
+      end
+
+    %{state | port: uri.port, host: uri.host}
   end
 
   defp render_opts(opts) do

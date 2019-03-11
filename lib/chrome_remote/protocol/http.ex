@@ -10,23 +10,15 @@ defmodule ChromeRemote.Protocol.HTTP do
     data
   end
 
-  defp execute_request(%{host: host, port: port}, path) do
-    {:ok, conn} = Mint.HTTP.connect(:http, host, port)
-    {:ok, conn, _ref} = Mint.HTTP.request(conn, "GET", path, [])
+  defp execute_request(%URI{} = uri, path) do
+    url =
+      uri
+      |> Map.put(:path, path)
+      |> URI.to_string()
 
-    data =
-      receive do
-        message ->
-          {:ok, _conn, responses} = Mint.HTTP.stream(conn, message)
-
-          responses
-          |> Enum.find_value(fn
-            {:data, _, data} -> data
-            _ -> nil
-          end)
-      end
-
-    data
+    with {:ok, resp} <- HTTPoison.get(url),
+         body <- Map.get(resp, :body),
+         do: body
   end
 
   defp handle_response(body) do

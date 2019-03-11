@@ -15,6 +15,7 @@ defmodule ChromeRemote.Page do
             credentials: nil,
             lifecycle_pid: nil
 
+  def start(args \\ [], opts \\ []), do: GenServer.start(__MODULE__, args, opts)
   def start_link(args \\ [], opts \\ []), do: GenServer.start_link(__MODULE__, args, opts)
 
   def init(opts) do
@@ -22,8 +23,7 @@ defmodule ChromeRemote.Page do
     page_id = Keyword.get(opts, :page_id)
     credentials = Keyword.get(opts, :credentials)
     user_agent = Keyword.get(opts, :user_agent)
-
-    Process.monitor(chrome_pid)
+    language = Keyword.get(opts, :language)
 
     {:ok, socket} =
       Chrome.get_websocket_uri(chrome_pid, page_id)
@@ -33,6 +33,7 @@ defmodule ChromeRemote.Page do
     setup_authentication(credentials)
     {:ok, lifecycle_pid} = setup_lifecycle()
     setup_user_agent(user_agent)
+    setup_language(language)
 
     state = %Page{
       socket: socket,
@@ -45,14 +46,16 @@ defmodule ChromeRemote.Page do
   end
 
   def navigate(page, url) do
+    send(get_lifecycle(page), {:navigate, url})
     Interface.Page.navigate!(page, %{url: url})
-    send(get_lifecycle(page), :navigating)
   end
 
   def wait_for_loading(page) do
     get_lifecycle(page)
     |> Page.Lifecycle.wait_for_loading()
   end
+
+  def get_page_id(page), do: GenServer.call(page, :get_page_id)
 
   def subscribe(pid, event, subscriber_pid \\ self()) do
     GenServer.call(pid, {:subscribe, event, subscriber_pid})
@@ -133,6 +136,10 @@ defmodule ChromeRemote.Page do
 
   def handle_call(:get_lifecycle, _from, %{lifecycle_pid: lifecycle_pid} = state) do
     {:reply, lifecycle_pid, state}
+  end
+
+  def handle_call(:get_page_id, _from, %{page_id: page_id} = state) do
+    {:reply, page_id, state}
   end
 
   # This handles websocket frames coming from the websocket connection.
@@ -245,7 +252,18 @@ defmodule ChromeRemote.Page do
     end)
   end
 
+  defp setup_language(nil), do: nil
+
+  defp setup_language(language) do
+    pid = self()
+
+    Task.async(fn ->
+      Interface.Network.setExtraHTTPHeaders!(pid, %{headers: %{"Accept-Language" => language}})
+    end)
+  end
+
   def terminate(_reason, state) do
+    IO.puts("TERMINATE")
     Process.exit(state.socket, :kill)
     :stop
   end
