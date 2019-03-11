@@ -89,7 +89,10 @@ defmodule ChromeRemote.Chrome do
   # -----
 
   defp launch(state, opts) do
-    executable = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    executable =
+      System.get_env("CHROME_EXECUTABLE") ||
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
     wrapper = Path.join(:code.priv_dir(:chrome_remote), "wrapper.sh")
 
     command = "#{wrapper} '#{executable}' #{render_opts(opts)}"
