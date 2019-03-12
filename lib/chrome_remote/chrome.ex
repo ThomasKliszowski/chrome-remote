@@ -98,23 +98,33 @@ defmodule ChromeRemote.Chrome do
     command = "#{wrapper} '#{executable}' #{render_opts(opts)}"
     Port.open({:spawn, command}, [:stderr_to_stdout])
 
-    receive do
-      {_, {:data, _}} -> nil
-    end
-
-    uri =
-      receive do
-        {_, {:data, message}} ->
-          "DevTools listening on " <> address =
-            message
-            |> to_string()
-            |> String.trim()
-
-          URI.parse(address)
-      end
+    {:ok, uri} = read_address_from_stdout()
 
     %{state | port: uri.port, host: uri.host}
   end
+
+  defp read_address_from_stdout() do
+    receive do
+      {_, {:data, message}} ->
+        message
+        |> to_string()
+        |> String.trim()
+        |> extract_address_from_line()
+        |> case do
+          {:ok, address} -> {:ok, address}
+          {:error, :address_not_found} -> read_address_from_stdout()
+        end
+    after
+      3_000 ->
+        {:error, :chrome_not_loaded}
+    end
+  end
+
+  defp extract_address_from_line("DevTools listening on " <> address) do
+    {:ok, URI.parse(address)}
+  end
+
+  defp extract_address_from_line(_), do: {:error, :address_not_found}
 
   defp render_opts(opts) do
     Enum.map(opts, fn
