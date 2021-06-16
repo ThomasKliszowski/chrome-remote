@@ -109,7 +109,7 @@ defmodule ChromeRemote.Chrome do
         message
         |> to_string()
         |> String.trim()
-        |> extract_address_from_line()
+        |> extract_address()
         |> case do
           {:ok, address} -> {:ok, address}
           {:error, :address_not_found} -> read_address_from_stdout()
@@ -120,11 +120,22 @@ defmodule ChromeRemote.Chrome do
     end
   end
 
-  defp extract_address_from_line("DevTools listening on " <> address) do
-    {:ok, URI.parse(address)}
+  defp extract_address(message) do
+    message
+    |> String.split("\n")
+    |> IO.inspect()
+    |> Enum.find_value(nil, &extract_address_from_line/1)
+    |> case do
+      nil -> {:error, :address_not_found}
+      address -> {:ok, address}
+    end
   end
 
-  defp extract_address_from_line(_), do: {:error, :address_not_found}
+  defp extract_address_from_line("DevTools listening on " <> address) do
+    URI.parse(address)
+  end
+
+  defp extract_address_from_line(_), do: nil
 
   defp render_opts(opts) do
     Enum.map(opts, fn
